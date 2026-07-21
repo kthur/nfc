@@ -13,7 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CreditCard
-import androidx.compose.material.icons.filled.Nfc
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -143,7 +143,7 @@ fun NfcEmulatorAppScreen(
                 NavigationBarItem(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Default.Nfc, contentDescription = "스캔 모드") },
+                    icon = { Icon(Icons.Default.Refresh, contentDescription = "스캔 모드") },
                     label = { Text("카드 스캔") }
                 )
                 NavigationBarItem(
