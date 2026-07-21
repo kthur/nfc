@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.google.firebase.appdistribution")
 }
 
 android {
@@ -27,6 +28,18 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            firebaseAppDistribution {
+                appId = System.getenv("FIREBASE_APP_ID") ?: ""
+                groups = "testers"
+                artifactType = "APK"
+            }
+        }
+        debug {
+            firebaseAppDistribution {
+                appId = System.getenv("FIREBASE_APP_ID") ?: ""
+                groups = "testers"
+                artifactType = "APK"
+            }
         }
     }
     compileOptions {
