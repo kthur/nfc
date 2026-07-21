@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NFC 카드 스캐너 &amp; HCE</string>
+    <string name="servicedesc">가상 스마트카드 HCE 에뮬레이션 서비스</string>
+    <string name="aiddesc">NFC HCE 커스텀 스마트카드 AID</string>
+</resources>
