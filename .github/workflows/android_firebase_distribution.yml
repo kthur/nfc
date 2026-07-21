@@ -42,6 +42,6 @@ jobs:
         if: steps.check_secrets.outputs.has_secrets == 'true'
         uses: w9jds/firebase-action@v2.2.2
         with:
-          args: appdistribution:distribute app/build/outputs/apk/debug/app-debug.apk --app ${{ secrets.FIREBASE_APP_ID }} --groups testers --release-notes "Automated build from GitHub Actions (Commit: ${{ github.sha }})"
+          args: "appdistribution:distribute app/build/outputs/apk/debug/app-debug.apk --app ${{ secrets.FIREBASE_APP_ID }} --groups testers --release-notes 'Automated build from GitHub Actions'"
         env:
           GCP_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
