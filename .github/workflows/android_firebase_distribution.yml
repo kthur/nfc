@@ -22,16 +22,24 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Gradle Cache
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Make Gradle Wrapper Executable
-        run: chmod +x gradlew
-
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: gradle assembleDebug --stacktrace
+
+      - name: Check Firebase Secrets Availability
+        id: check_secrets
+        run: |
+          if [ -z "${{ secrets.FIREBASE_APP_ID }}" ] || [ -z "${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}" ]; then
+            echo "::warning ::Firebase Secrets (FIREBASE_APP_ID / FIREBASE_SERVICE_ACCOUNT_KEY) are missing in GitHub Secrets."
+            echo "has_secrets=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_secrets=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Upload to Firebase App Distribution
+        if: steps.check_secrets.outputs.has_secrets == 'true'
         uses: w9jds/firebase-action@v2.2.2
         with:
           args: appdistribution:distribute app/build/outputs/apk/debug/app-debug.apk --app ${{ secrets.FIREBASE_APP_ID }} --groups testers --release-notes "Automated build from GitHub Actions (Commit: ${{ github.sha }})"
