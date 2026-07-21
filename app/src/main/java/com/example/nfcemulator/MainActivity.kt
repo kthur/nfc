@@ -70,8 +70,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                 NfcAdapter.FLAG_READER_NFC_A or
                         NfcAdapter.FLAG_READER_NFC_B or
                         NfcAdapter.FLAG_READER_NFC_F or
-                        NfcAdapter.FLAG_READER_NFC_V or
-                        NfcAdapter.FLAG_READER_NO_LDETECT,
+                        NfcAdapter.FLAG_READER_NFC_V,
                 options
             )
         }
