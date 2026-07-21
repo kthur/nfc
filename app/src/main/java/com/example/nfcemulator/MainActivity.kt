@@ -125,7 +125,7 @@ fun NfcEmulatorAppScreen(
     scannedCards: List<ScannedCardInfo>,
     onOpenNfcSettings: () -> Unit
 ) {
-    var selectedTab by remember { mutableStateIntOf(0) }
+    var selectedTab by remember { mutableIntStateOf(0) }
     var payloadText by remember { mutableStateOf(MyHostApduService.emulationResponsePayload) }
 
     Scaffold(
