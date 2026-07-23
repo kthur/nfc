@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         var activeTab = 0
         var targetWriteUid = ""
         var writeMode = 0 // 0: Standard CUID (Gen2), 1: Gen1a Magic Backdoor
+        var authKeyHex = "FFFFFFFFFFFF" // 6-byte hex key for Sector 0
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -149,16 +150,25 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         try {
             mifare.connect()
             
-            // Standard default key A/B for blank CUID tags is FFFFFFFFFFFF
-            val defaultKey = MifareClassic.KEY_DEFAULT
+            // Generate raw 6-byte key from target hex key (default: FFFFFFFFFFFF)
+            val keyHexToUse = authKeyHex.replace(":", "").replace(" ", "").trim()
+            val authKeyBytes = try {
+                if (keyHexToUse.length == 12) {
+                    HexUtils.hexStringToByteArray(keyHexToUse)
+                } else {
+                    byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte())
+                }
+            } catch (e: Exception) {
+                byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte())
+            }
             
-            // Authenticate sector 0
-            val isAuth = mifare.authenticateSectorWithKeyA(0, defaultKey) || 
-                         mifare.authenticateSectorWithKeyB(0, defaultKey)
+            // Authenticate sector 0 explicitly
+            val isAuth = mifare.authenticateSectorWithKeyA(0, authKeyBytes) || 
+                         mifare.authenticateSectorWithKeyB(0, authKeyBytes)
             
             if (!isAuth) {
                 runOnUiThread {
-                    Toast.makeText(this, "섹터 0 인증에 실패했습니다 (기본 키가 아님).", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "섹터 0 인증에 실패했습니다 (인증 키 불일치).", Toast.LENGTH_LONG).show()
                 }
                 return
             }
@@ -206,16 +216,11 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
             nfcA.connect()
             nfcA.timeout = 2000
 
-            // Step 1: Send Gen1a Backdoor Wakeup/Unlock commands
-            // Command 0x50 0x00 (Halt) followed by 0x40 (7-bit raw Command)
-            // Or directly sending Magic commands to transceive.
-            
             // Magic Command 1: Wake up / Unlock (0x40)
             try {
                 val unlockCmd1 = byteArrayOf(0x40.toByte())
                 nfcA.transceive(unlockCmd1)
             } catch (e: Exception) {
-                // Sometime magic cards do not ACK this command or throw error but still unlock.
                 Log.d("MagicWrite", "Unlock command 1 exception (expected on some chips)", e)
             }
 
@@ -271,6 +276,7 @@ fun NfcEmulatorAppScreen(
     var payloadText by remember { mutableStateOf(MyHostApduService.emulationResponsePayload) }
     var targetUidInput by remember { mutableStateOf("") }
     var selectedWriteMode by remember { mutableIntStateOf(0) } // 0: CUID (Gen2), 1: Gen1a Magic
+    var authKeyInput by remember { mutableStateOf("FFFFFFFFFFFF") } // 12-char hex key for authentication
 
     // Sync state to companion object for background NFC thread
     LaunchedEffect(selectedTab) {
@@ -281,6 +287,9 @@ fun NfcEmulatorAppScreen(
     }
     LaunchedEffect(selectedWriteMode) {
         MainActivity.writeMode = selectedWriteMode
+    }
+    LaunchedEffect(authKeyInput) {
+        MainActivity.authKeyHex = authKeyInput
     }
 
     Scaffold(
@@ -500,12 +509,25 @@ fun NfcEmulatorAppScreen(
                                 singleLine = true
                             )
 
+                            if (selectedWriteMode == 0) {
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                OutlinedTextField(
+                                    value = authKeyInput,
+                                    onValueChange = { authKeyInput = it },
+                                    label = { Text("섹터 0 인증 키 (12자리 16진수 입력)") },
+                                    placeholder = { Text("기본값: FFFFFFFFFFFF") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true
+                                )
+                            }
+
                             Spacer(modifier = Modifier.height(12.dp))
 
                             Text(
                                 text = "⚠️ 주의:\n" +
-                                        "1. 표준 CUID (Gen2) 방식은 일반 암호 인증(Sector 0)을 사용합니다.\n" +
-                                        "2. Gen1a Magic 방식은 0x40/0x43 백도어 커맨드로 칩 잠금을 풀고 저수준(NfcA) 쓰기를 실행합니다. 보유하신 복제 태그 사양에 맞게 선택하세요.",
+                                        "1. 표준 CUID (Gen2) 방식은 입력한 인증 키를 통해 Sector 0 권한을 획득합니다. (기본값: FFFFFFFFFFFF)\n" +
+                                        "2. Gen1a Magic 방식은 백도어 커맨드로 칩 잠금을 풀고 저수준(NfcA) 쓰기를 실행합니다. 보유하신 복제 태그 사양에 맞게 선택하세요.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.DarkGray,
                                 fontWeight = FontWeight.Normal
