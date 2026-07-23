@@ -129,7 +129,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         }
     }
 
-    // Gen2 CUID Write using Standard commands
+    // Gen2 CUID Write using raw command injection via transceive to bypass Android API Block 0 write block filters.
     private fun handleCuidWrite(tag: Tag) {
         val uidToWrite = targetWriteUid.replace(":", "").replace(" ", "").trim()
         if (uidToWrite.length != 8) {
@@ -149,6 +149,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
 
         try {
             mifare.connect()
+            mifare.timeout = 2000
             
             // Generate raw 6-byte key from target hex key (default: FFFFFFFFFFFF)
             val keyHexToUse = authKeyHex.replace(":", "").replace(" ", "").trim()
@@ -173,11 +174,23 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                 return
             }
 
-            // Create Mifare Block 0 content with requested UID
+            // Create Block 0 manufacturing block with required checksum (BCC)
             val block0Data = HexUtils.createBlock0(uidToWrite)
             
-            // Write to Sector 0, Block 0 (absolute block index 0)
-            mifare.writeBlock(0, block0Data)
+            // Bypassing MifareClassic.writeBlock(0, ...) security filter check via raw transceive
+            // Standard MIFARE Classic WRITE command: Part 1 - Send 0xA0 (WRITE command) + 0x00 (Block 0 address)
+            val writeHeader = byteArrayOf(0xA0.toByte(), 0x00.toByte())
+            
+            try {
+                mifare.transceive(writeHeader)
+            } catch (e: Exception) {
+                // MifareClassic transceive might throw an exception when receiving the ACK/NAK response frame 
+                // in standard Android API, but standard tags accept the payload. Let's proceed or log it.
+                Log.d("CuidWrite", "Part 1 transceive response (often throws exception in Android): ${e.localizedMessage}")
+            }
+
+            // Part 2 - Transmit actual 16-byte Block 0 raw payload
+            mifare.transceive(block0Data)
 
             runOnUiThread {
                 Toast.makeText(this, "CUID 태그에 UID($uidToWrite) 복사 완료!", Toast.LENGTH_LONG).show()
