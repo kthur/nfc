@@ -53,8 +53,11 @@ jobs:
       - name: Check Firebase Secrets Availability
         id: check_secrets
         run: |
-          if [ -z "${{ secrets.FIREBASE_APP_ID }}" ] || [ -z "${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}" ]; then
-            echo "::warning ::Firebase Secrets (FIREBASE_APP_ID / FIREBASE_SERVICE_ACCOUNT_KEY) are missing."
+          if [ -z "${{ secrets.FIREBASE_APP_ID }}" ]; then
+            echo "::warning ::FIREBASE_APP_ID secret is missing in GitHub Secrets."
+            echo "has_secrets=false" >> $GITHUB_OUTPUT
+          elif [ -z "${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}" ] && [ -z "${{ secrets.FIREBASE_TOKEN }}" ]; then
+            echo "::warning ::Neither FIREBASE_SERVICE_ACCOUNT_KEY nor FIREBASE_TOKEN secret is set in GitHub Secrets."
             echo "has_secrets=false" >> $GITHUB_OUTPUT
           else
             echo "has_secrets=true" >> $GITHUB_OUTPUT
@@ -67,3 +70,4 @@ jobs:
           args: "appdistribution:distribute app/build/outputs/apk/debug/app-debug.apk --app ${{ secrets.FIREBASE_APP_ID }} --groups testers --release-notes 'Automated build from GitHub Actions'"
         env:
           GCP_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
