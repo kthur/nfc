@@ -3,8 +3,10 @@ package com.example.nfcemulator
 import android.content.Intent
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.tech.MifareClassic
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CopyAll
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material3.*
@@ -38,6 +41,12 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
     private val scannedCards = mutableStateListOf<ScannedCardInfo>()
     private var isNfcAvailable by mutableStateOf(false)
     private var isNfcEnabled by mutableStateOf(false)
+
+    // Global states to share configuration with tag detection thread
+    companion object {
+        var activeTab = 0
+        var targetWriteUid = ""
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -95,15 +104,76 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         val techList = tag.techList.map { it.substringAfterLast(".") }
         val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
 
-        val cardInfo = ScannedCardInfo(
-            timestamp = timeStr,
-            uid = hexUid.ifEmpty { "N/A" },
-            techList = techList
-        )
+        if (activeTab == 2) {
+            // CUID Write Mode active
+            handleCuidWrite(tag)
+        } else {
+            // Scan Mode active
+            val cardInfo = ScannedCardInfo(
+                timestamp = timeStr,
+                uid = hexUid.ifEmpty { "N/A" },
+                techList = techList
+            )
 
-        runOnUiThread {
-            scannedCards.add(0, cardInfo)
-            Toast.makeText(this, "NFC 카드 스캔 완료: UID $hexUid", Toast.LENGTH_SHORT).show()
+            runOnUiThread {
+                scannedCards.add(0, cardInfo)
+                Toast.makeText(this, "NFC 카드 스캔 완료: UID $hexUid", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun handleCuidWrite(tag: Tag) {
+        val uidToWrite = targetWriteUid.replace(":", "").replace(" ", "").trim()
+        if (uidToWrite.length != 8) {
+            runOnUiThread {
+                Toast.makeText(this, "올바른 4바이트(8자리) UID를 입력해 주세요.", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+
+        val mifare = MifareClassic.get(tag)
+        if (mifare == null) {
+            runOnUiThread {
+                Toast.makeText(this, "이 태그는 Mifare Classic (CUID) 규격이 아닙니다.", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+
+        try {
+            mifare.connect()
+            
+            // Standard default key A/B for blank CUID tags is FFFFFFFFFFFF
+            val defaultKey = MifareClassic.KEY_DEFAULT
+            
+            // Authenticate sector 0
+            val isAuth = mifare.authenticateSectorWithKeyA(0, defaultKey) || 
+                         mifare.authenticateSectorWithKeyB(0, defaultKey)
+            
+            if (!isAuth) {
+                runOnUiThread {
+                    Toast.makeText(this, "섹터 0 인증에 실패했습니다 (기본 키가 아님).", Toast.LENGTH_LONG).show()
+                }
+                return
+            }
+
+            // Create Mifare Block 0 content with requested UID
+            val block0Data = HexUtils.createBlock0(uidToWrite)
+            
+            // Write to Sector 0, Block 0 (absolute block index 0)
+            mifare.writeBlock(0, block0Data)
+
+            runOnUiThread {
+                Toast.makeText(this, "CUID 태그에 UID($uidToWrite) 복사 완료!", Toast.LENGTH_LONG).show()
+            }
+        } catch (e: Exception) {
+            Log.e("CuidWrite", "Error writing CUID tag", e)
+            runOnUiThread {
+                Toast.makeText(this, "쓰기 오류: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            }
+        } finally {
+            try {
+                mifare.close()
+            } catch (e: Exception) {}
         }
     }
 
@@ -126,11 +196,20 @@ fun NfcEmulatorAppScreen(
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var payloadText by remember { mutableStateOf(MyHostApduService.emulationResponsePayload) }
+    var targetUidInput by remember { mutableStateOf("") }
+
+    // Sync state to companion object for background NFC thread
+    LaunchedEffect(selectedTab) {
+        MainActivity.activeTab = selectedTab
+    }
+    LaunchedEffect(targetUidInput) {
+        MainActivity.targetWriteUid = targetUidInput
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("NFC 스캐너 & HCE 에뮬레이터", fontWeight = FontWeight.Bold) },
+                title = { Text("NFC 스캐너 & 에뮬레이터", fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -149,7 +228,13 @@ fun NfcEmulatorAppScreen(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
                     icon = { Icon(Icons.Default.CreditCard, contentDescription = "HCE 에뮬레이션") },
-                    label = { Text("HCE 에뮬레이션") }
+                    label = { Text("HCE 에뮬") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 2,
+                    onClick = { selectedTab = 2 },
+                    icon = { Icon(Icons.Default.CopyAll, contentDescription = "CUID 복사 모드") },
+                    label = { Text("CUID 쓰기") }
                 )
             }
         }
@@ -173,102 +258,156 @@ fun NfcEmulatorAppScreen(
                     onAction = onOpenNfcSettings
                 )
             } else {
+                val statusText = when(selectedTab) {
+                    0 -> "NFC가 활성화되었습니다. 카드를 스마트폰 뒷면에 대주세요."
+                    1 -> "AID 기반의 가상 스마트카드 에뮬레이션 동작 중..."
+                    else -> "CUID 카드 쓰기 준비 완료. 카드를 기기 뒷면에 대주세요."
+                }
                 StatusCard(
-                    message = "NFC가 활성화되었습니다. 카드를 스마트폰 뒷면에 대주세요.",
+                    message = statusText,
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            if (selectedTab == 0) {
-                // Card Reader View
-                Text(
-                    text = "스캔된 카드 목록 (최신순)",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
+            when (selectedTab) {
+                0 -> {
+                    // Card Reader View
+                    Text(
+                        text = "스캔된 카드 목록 (최신순)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                if (scannedCards.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "NFC 카드를 스마트폰 뒷면에 태그하세요.",
-                            color = Color.Gray
-                        )
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(scannedCards) { card ->
-                            CardInfoItem(card)
+                    if (scannedCards.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "NFC 카드를 스마트폰 뒷면에 태그하세요.",
+                                color = Color.Gray
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(scannedCards) { card ->
+                                CardInfoItem(card) {
+                                    // Click scanned card item to copy UID to writing target
+                                    targetUidInput = card.uid
+                                    selectedTab = 2 // Switch to write tab
+                                }
+                            }
                         }
                     }
                 }
-            } else {
-                // HCE Emulation View
-                Text(
-                    text = "Host Card Emulation (HCE) 에뮬레이터",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
+                1 -> {
+                    // HCE Emulation View
+                    Text(
+                        text = "Host Card Emulation (HCE) 에뮬레이터",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("등록된 AID:", fontWeight = FontWeight.Bold)
-                        Text("F0010203040506 (Category: Other)", style = MaterialTheme.typography.bodyMedium)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text("등록된 AID:", fontWeight = FontWeight.Bold)
+                            Text("F0010203040506 (Category: Other)", style = MaterialTheme.typography.bodyMedium)
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
 
-                        OutlinedTextField(
-                            value = payloadText,
-                            onValueChange = {
-                                payloadText = it
-                                MyHostApduService.emulationResponsePayload = it
-                            },
-                            label = { Text("에뮬레이션 응답 페이로드") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                            OutlinedTextField(
+                                value = payloadText,
+                                onValueChange = {
+                                    payloadText = it
+                                    MyHostApduService.emulationResponsePayload = it
+                                },
+                                label = { Text("에뮬레이션 응답 페이로드") },
+                                modifier = Modifier.fillMaxWidth()
+                            )
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
 
-                        Text(
-                            text = "💡 안내: 외부 NFC 리더기가 SELECT AID(00A40400...) 명령을 전송하면 설정한 페이로드와 SUCCESS status(9000)를 응답합니다.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                            Text(
+                                text = "💡 안내: 외부 NFC 리더기가 SELECT AID(00A40400...) 명령을 전송하면 설정한 페이로드와 SUCCESS status(9000)를 응답합니다.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "ℹ️ 안드로이드 HCE 보안 제약사항",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "안드로이드 OS 표준 HCE API는 보안상 실물 카드 UID 스푸핑을 제한하고 임의/고정 UID를 제공합니다. 본 서비스는 AID 기반 APDU 에뮬레이션 표준으로 구현되었습니다.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
                     }
                 }
+                2 -> {
+                    // CUID Write View
+                    Text(
+                        text = "CUID 태그 UID 쓰기 (카드 복사)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                Spacer(modifier = Modifier.height(16.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "기기 뒷면에 CUID 특수 태그를 밀착하면 입력된 UID가 즉시 물리적으로 복사(기록)됩니다.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
 
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "ℹ️ 안드로이드 HCE 보안 제약사항",
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "안드로이드 OS 표준 HCE API는 보안상 실물 카드 UID 스푸핑을 제한하고 임의/고정 UID를 제공합니다. 본 서비스는 AID 기반 APDU 에뮬레이션 표준으로 구현되었습니다.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            OutlinedTextField(
+                                value = targetUidInput,
+                                onValueChange = { targetUidInput = it },
+                                label = { Text("대상 UID (8자리 16진수 입력)") },
+                                placeholder = { Text("예: AABBCCDD") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Text(
+                                text = "⚠️ 주의: 오직 Sector 0 / Block 0의 쓰기가 열려 있는 CUID(UID Writable Gen2) 칩셋 카드만 기록이 가능합니다. 일반 카드는 에러가 발생합니다.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Red,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }
@@ -316,7 +455,7 @@ fun StatusCardWithAction(message: String, actionLabel: String, onAction: () -> U
 }
 
 @Composable
-fun CardInfoItem(card: ScannedCardInfo) {
+fun CardInfoItem(card: ScannedCardInfo, onCopyClick: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -324,10 +463,26 @@ fun CardInfoItem(card: ScannedCardInfo) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("NFC Card ID (UID)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text(card.timestamp, color = Color.Gray, fontSize = 12.sp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(card.timestamp, color = Color.Gray, fontSize = 12.sp)
+                    IconButton(
+                        onClick = onCopyClick,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CopyAll,
+                            contentDescription = "CUID 쓰기 모드로 복사",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
             Spacer(modifier = Modifier.height(4.dp))
             Text(
