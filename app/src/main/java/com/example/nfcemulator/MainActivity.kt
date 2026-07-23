@@ -129,7 +129,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         }
     }
 
-    // Gen2 CUID Write using raw command injection via transceive to bypass Android API Block 0 write block filters.
+    // Gen2 CUID Write using raw command injection via transceive with fallback to writeBlock
     private fun handleCuidWrite(tag: Tag) {
         val uidToWrite = targetWriteUid.replace(":", "").replace(" ", "").trim()
         if (uidToWrite.length != 8) {
@@ -151,7 +151,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
             mifare.connect()
             mifare.timeout = 2000
             
-            // Generate raw 6-byte key from target hex key (default: FFFFFFFFFFFF)
+            // Parse 6-byte key from target hex key (default: FFFFFFFFFFFF)
             val keyHexToUse = authKeyHex.replace(":", "").replace(" ", "").trim()
             val authKeyBytes = try {
                 if (keyHexToUse.length == 12) {
@@ -163,37 +163,55 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                 byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte())
             }
             
-            // Authenticate sector 0 explicitly
+            // Authenticate sector 0 explicitly using Key A or Key B
             val isAuth = mifare.authenticateSectorWithKeyA(0, authKeyBytes) || 
                          mifare.authenticateSectorWithKeyB(0, authKeyBytes)
             
             if (!isAuth) {
                 runOnUiThread {
-                    Toast.makeText(this, "섹터 0 인증에 실패했습니다 (인증 키 불일치).", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "섹터 0 인증 실패! (키가 FFFFFFFFFFFF가 아니거나 다름)", Toast.LENGTH_LONG).show()
                 }
                 return
             }
 
-            // Create Block 0 manufacturing block with required checksum (BCC)
+            // Create Block 0 manufacturing block with required BCC checksum
             val block0Data = HexUtils.createBlock0(uidToWrite)
-            
-            // Bypassing MifareClassic.writeBlock(0, ...) security filter check via raw transceive
-            // Standard MIFARE Classic WRITE command: Part 1 - Send 0xA0 (WRITE command) + 0x00 (Block 0 address)
-            val writeHeader = byteArrayOf(0xA0.toByte(), 0x00.toByte())
-            
+            var writeSuccess = false
+
+            // Strategy 1: Standard API writeBlock(0, ...)
             try {
-                mifare.transceive(writeHeader)
+                mifare.writeBlock(0, block0Data)
+                writeSuccess = true
+                Log.d("CuidWrite", "writeBlock(0) successful!")
             } catch (e: Exception) {
-                // MifareClassic transceive might throw an exception when receiving the ACK/NAK response frame 
-                // in standard Android API, but standard tags accept the payload. Let's proceed or log it.
-                Log.d("CuidWrite", "Part 1 transceive response (often throws exception in Android): ${e.localizedMessage}")
+                Log.w("CuidWrite", "writeBlock(0) failed, trying raw transceive bypass...", e)
             }
 
-            // Part 2 - Transmit actual 16-byte Block 0 raw payload
-            mifare.transceive(block0Data)
+            // Strategy 2: Raw Command Bypass via transceive if writeBlock failed
+            if (!writeSuccess) {
+                try {
+                    val writeHeader = byteArrayOf(0xA0.toByte(), 0x00.toByte())
+                    try {
+                        mifare.transceive(writeHeader)
+                    } catch (e: Exception) {
+                        Log.d("CuidWrite", "Header transceive ack exception (ignored): ${e.localizedMessage}")
+                    }
+                    mifare.transceive(block0Data)
+                    writeSuccess = true
+                    Log.d("CuidWrite", "transceive bypass successful!")
+                } catch (e: Exception) {
+                    Log.e("CuidWrite", "Raw transceive bypass failed as well", e)
+                }
+            }
 
-            runOnUiThread {
-                Toast.makeText(this, "CUID 태그에 UID($uidToWrite) 복사 완료!", Toast.LENGTH_LONG).show()
+            if (writeSuccess) {
+                runOnUiThread {
+                    Toast.makeText(this, "CUID 태그에 UID($uidToWrite) 복사 성공!", Toast.LENGTH_LONG).show()
+                }
+            } else {
+                runOnUiThread {
+                    Toast.makeText(this, "쓰기 실패: 이 태그는 CUID (Gen2) 규격을 지원하지 않을 수 있습니다.", Toast.LENGTH_LONG).show()
+                }
             }
         } catch (e: Exception) {
             Log.e("CuidWrite", "Error writing CUID tag", e)
