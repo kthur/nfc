@@ -4,6 +4,7 @@ import android.content.Intent
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.MifareClassic
+import android.nfc.tech.NfcA
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
     companion object {
         var activeTab = 0
         var targetWriteUid = ""
+        var writeMode = 0 // 0: Standard CUID (Gen2), 1: Gen1a Magic Backdoor
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -105,8 +107,12 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
 
         if (activeTab == 2) {
-            // CUID Write Mode active
-            handleCuidWrite(tag)
+            // CUID / Magic Write Mode active
+            if (writeMode == 1) {
+                handleGen1aMagicWrite(tag)
+            } else {
+                handleCuidWrite(tag)
+            }
         } else {
             // Scan Mode active
             val cardInfo = ScannedCardInfo(
@@ -122,6 +128,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         }
     }
 
+    // Gen2 CUID Write using Standard commands
     private fun handleCuidWrite(tag: Tag) {
         val uidToWrite = targetWriteUid.replace(":", "").replace(" ", "").trim()
         if (uidToWrite.length != 8) {
@@ -177,6 +184,72 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         }
     }
 
+    // Gen1a Magic Card Write using backdoor unlock sequence via NfcA
+    private fun handleGen1aMagicWrite(tag: Tag) {
+        val uidToWrite = targetWriteUid.replace(":", "").replace(" ", "").trim()
+        if (uidToWrite.length != 8) {
+            runOnUiThread {
+                Toast.makeText(this, "올바른 4바이트(8자리) UID를 입력해 주세요.", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+
+        val nfcA = NfcA.get(tag)
+        if (nfcA == null) {
+            runOnUiThread {
+                Toast.makeText(this, "NfcA 규격을 획득할 수 없는 태그입니다.", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+
+        try {
+            nfcA.connect()
+            nfcA.timeout = 2000
+
+            // Step 1: Send Gen1a Backdoor Wakeup/Unlock commands
+            // Command 0x50 0x00 (Halt) followed by 0x40 (7-bit raw Command)
+            // Or directly sending Magic commands to transceive.
+            
+            // Magic Command 1: Wake up / Unlock (0x40)
+            try {
+                val unlockCmd1 = byteArrayOf(0x40.toByte())
+                nfcA.transceive(unlockCmd1)
+            } catch (e: Exception) {
+                // Sometime magic cards do not ACK this command or throw error but still unlock.
+                Log.d("MagicWrite", "Unlock command 1 exception (expected on some chips)", e)
+            }
+
+            // Magic Command 2: Writable Mode Unlock (0x43)
+            try {
+                val unlockCmd2 = byteArrayOf(0x43.toByte())
+                nfcA.transceive(unlockCmd2)
+            } catch (e: Exception) {
+                Log.d("MagicWrite", "Unlock command 2 exception", e)
+            }
+
+            // Step 2: Write Block 0 Command (0xA0 followed by Block Number 0x00)
+            val writeHeader = byteArrayOf(0xA0.toByte(), 0x00.toByte())
+            val block0Data = HexUtils.createBlock0(uidToWrite)
+            
+            // Full command to write Block 0 via raw Mifare protocol
+            val fullWriteCmd = writeHeader + block0Data
+            nfcA.transceive(fullWriteCmd)
+
+            runOnUiThread {
+                Toast.makeText(this, "Gen1a Magic 백도어로 UID($uidToWrite) 복사 성공!", Toast.LENGTH_LONG).show()
+            }
+        } catch (e: Exception) {
+            Log.e("MagicWrite", "Error writing Gen1a Magic tag", e)
+            runOnUiThread {
+                Toast.makeText(this, "백도어 쓰기 오류: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            }
+        } finally {
+            try {
+                nfcA.close()
+            } catch (e: Exception) {}
+        }
+    }
+
     private fun openNfcSettings() {
         try {
             startActivity(Intent(Settings.ACTION_NFC_SETTINGS))
@@ -197,6 +270,7 @@ fun NfcEmulatorAppScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var payloadText by remember { mutableStateOf(MyHostApduService.emulationResponsePayload) }
     var targetUidInput by remember { mutableStateOf("") }
+    var selectedWriteMode by remember { mutableIntStateOf(0) } // 0: CUID (Gen2), 1: Gen1a Magic
 
     // Sync state to companion object for background NFC thread
     LaunchedEffect(selectedTab) {
@@ -204,6 +278,9 @@ fun NfcEmulatorAppScreen(
     }
     LaunchedEffect(targetUidInput) {
         MainActivity.targetWriteUid = targetUidInput
+    }
+    LaunchedEffect(selectedWriteMode) {
+        MainActivity.writeMode = selectedWriteMode
     }
 
     Scaffold(
@@ -234,7 +311,7 @@ fun NfcEmulatorAppScreen(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
                     icon = { Icon(Icons.Default.CopyAll, contentDescription = "CUID 복사 모드") },
-                    label = { Text("CUID 쓰기") }
+                    label = { Text("UID 쓰기") }
                 )
             }
         }
@@ -261,7 +338,7 @@ fun NfcEmulatorAppScreen(
                 val statusText = when(selectedTab) {
                     0 -> "NFC가 활성화되었습니다. 카드를 스마트폰 뒷면에 대주세요."
                     1 -> "AID 기반의 가상 스마트카드 에뮬레이션 동작 중..."
-                    else -> "CUID 카드 쓰기 준비 완료. 카드를 기기 뒷면에 대주세요."
+                    else -> if (selectedWriteMode == 0) "표준 CUID(Gen2) 쓰기 모드. 카드를 뒷면에 대주세요." else "Gen1a Magic 백도어 쓰기 모드. 카드를 뒷면에 대주세요."
                 }
                 StatusCard(
                     message = statusText,
@@ -369,9 +446,9 @@ fun NfcEmulatorAppScreen(
                     }
                 }
                 2 -> {
-                    // CUID Write View
+                    // CUID / Magic Writable Block 0 Write View
                     Text(
-                        text = "CUID 태그 UID 쓰기 (카드 복사)",
+                        text = "특수 태그 UID 쓰기 (카드 복사)",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -383,10 +460,34 @@ fun NfcEmulatorAppScreen(
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text(
-                                text = "기기 뒷면에 CUID 특수 태그를 밀착하면 입력된 UID가 즉시 물리적으로 복사(기록)됩니다.",
+                                text = "소유하고 계신 특수 복제 카드의 유형을 선택하고 기기 뒷면에 카드를 밀착해 주세요.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Writing Mode Radio Selection
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RadioButton(
+                                        selected = selectedWriteMode == 0,
+                                        onClick = { selectedWriteMode = 0 }
+                                    )
+                                    Text("표준 CUID (Gen2)", fontSize = 14.sp)
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RadioButton(
+                                        selected = selectedWriteMode == 1,
+                                        onClick = { selectedWriteMode = 1 }
+                                    )
+                                    Text("Magic (Gen1a 백도어)", fontSize = 14.sp)
+                                }
+                            }
 
                             Spacer(modifier = Modifier.height(16.dp))
 
@@ -402,10 +503,12 @@ fun NfcEmulatorAppScreen(
                             Spacer(modifier = Modifier.height(12.dp))
 
                             Text(
-                                text = "⚠️ 주의: 오직 Sector 0 / Block 0의 쓰기가 열려 있는 CUID(UID Writable Gen2) 칩셋 카드만 기록이 가능합니다. 일반 카드는 에러가 발생합니다.",
+                                text = "⚠️ 주의:\n" +
+                                        "1. 표준 CUID (Gen2) 방식은 일반 암호 인증(Sector 0)을 사용합니다.\n" +
+                                        "2. Gen1a Magic 방식은 0x40/0x43 백도어 커맨드로 칩 잠금을 풀고 저수준(NfcA) 쓰기를 실행합니다. 보유하신 복제 태그 사양에 맞게 선택하세요.",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.Red,
-                                fontWeight = FontWeight.SemiBold
+                                color = Color.DarkGray,
+                                fontWeight = FontWeight.Normal
                             )
                         }
                     }
