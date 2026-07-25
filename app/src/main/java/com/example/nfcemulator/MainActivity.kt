@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CopyAll
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Nfc
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,7 +35,8 @@ import java.util.*
 data class ScannedCardInfo(
     val timestamp: String,
     val uid: String,
-    val techList: List<String>
+    val techList: List<String>,
+    val detectedType: String = "분석 중..."
 )
 
 class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
@@ -114,18 +117,63 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                 handleCuidWrite(tag)
             }
         } else {
-            // Scan Mode active
+            // Scan Mode active: Perform CUID Gen2 non-destructive test
+            val cardType = detectTagType(tag)
             val cardInfo = ScannedCardInfo(
                 timestamp = timeStr,
                 uid = hexUid.ifEmpty { "N/A" },
-                techList = techList
+                techList = techList,
+                detectedType = cardType
             )
 
             runOnUiThread {
                 scannedCards.add(0, cardInfo)
-                Toast.makeText(this, "NFC 카드 스캔 완료: UID $hexUid", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "카드 스캔 완료: $cardType", Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    // Non-destructive CUID (Gen2) Card Test
+    private fun detectTagType(tag: Tag): String {
+        val mifare = MifareClassic.get(tag)
+        if (mifare != null) {
+            try {
+                mifare.connect()
+                mifare.timeout = 2000
+
+                val defaultKey = byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte())
+                val isAuth = mifare.authenticateSectorWithKeyA(0, defaultKey) || 
+                             mifare.authenticateSectorWithKeyB(0, defaultKey)
+
+                if (isAuth) {
+                    val block0 = mifare.readBlock(0)
+                    if (block0 != null && block0.size == 16) {
+                        // Non-destructive CUID test: write back original block 0 data
+                        try {
+                            mifare.writeBlock(0, block0)
+                            return "CUID (Gen2) - UID 쓰기 지원 태그 ✅"
+                        } catch (e: Exception) {
+                            // Standard Mifare Classic cards reject Block 0 writing
+                            return "표준 MIFARE Classic (UID 변경 불가) 🔒"
+                        }
+                    }
+                } else {
+                    return "MIFARE Classic (인증 키 불일치) 🔑"
+                }
+            } catch (e: Exception) {
+                Log.d("TagDetect", "Mifare detection error", e)
+                return "MIFARE Classic (읽기 전용/미지원)"
+            } finally {
+                try { mifare.close() } catch (e: Exception) {}
+            }
+        }
+
+        val nfcA = NfcA.get(tag)
+        if (nfcA != null) {
+            return "NfcA 표준 태그 (UID 고정) 🔒"
+        }
+
+        return "기타 NFC 태그"
     }
 
     // CUID (Gen2) Direct Block 0 Write Logic
@@ -141,7 +189,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         val mifare = MifareClassic.get(tag)
         if (mifare == null) {
             runOnUiThread {
-                Toast.makeText(this, "이 카드는 Mifare Classic 규격이 아닙니다. (Broadcom NFC 칩셋 스마트폰에서는 제한될 수 있습니다)", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "이 카드는 Mifare Classic 규격이 아닙니다.", Toast.LENGTH_LONG).show()
             }
             return
         }
@@ -193,7 +241,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                     try {
                         mifare.transceive(writeHeader)
                     } catch (e: Exception) {
-                        Log.d("CuidWrite", "transceive header ack exception (normal on some Android NCI): ${e.localizedMessage}")
+                        Log.d("CuidWrite", "transceive header ack exception: ${e.localizedMessage}")
                     }
                     mifare.transceive(block0Data)
                     writeSuccess = true
@@ -209,7 +257,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                 }
             } else {
                 runOnUiThread {
-                    Toast.makeText(this, "쓰기 실패!\n이 태그가 CUID(Gen2)가 아니거나, 스마트폰 NFC 칩셋(OS)에서 Block 0 쓰기를 차단 중입니다.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "쓰기 실패!\n이 태그가 CUID(Gen2)가 아니거나, 표준 Block 0 쓰기를 차단하는 카드입니다.", Toast.LENGTH_LONG).show()
                 }
             }
         } catch (e: Exception) {
@@ -275,7 +323,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         } catch (e: Exception) {
             Log.e("MagicWrite", "Error writing Gen1a Magic tag", e)
             runOnUiThread {
-                Toast.makeText(this, "Gen1a 쓰기 실패!\n스마트폰 NFC 칩셋은 Gen1a 7-bit 백도어 프레임 송신을 지원하지 않습니다.\n영상과 같이 Arduino+RC522 환경에서 진행해야 합니다.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Gen1a 쓰기 실패!\n스마트폰 NFC 칩셋은 Gen1a 7-bit 백도어 프레임 송신을 지원하지 않습니다.\nArduino+RC522 환경에서 진행해야 합니다.", Toast.LENGTH_LONG).show()
             }
         } finally {
             try {
@@ -373,7 +421,7 @@ fun NfcEmulatorAppScreen(
                 )
             } else {
                 val statusText = when(selectedTab) {
-                    0 -> "NFC가 활성화되었습니다. 카드를 스마트폰 뒷면에 대주세요."
+                    0 -> "NFC 태그 감지 및 CUID(Gen2) 검사 준비 완료. 카드를 태그하세요."
                     1 -> "AID 기반의 가상 스마트카드 에뮬레이션 동작 중..."
                     else -> if (selectedWriteMode == 0) "CUID(Gen2) 쓰기 모드. 카드를 뒷면에 밀착하세요." else "Gen1a Magic 백도어 쓰기 모드. (Arduino RC522 추천)"
                 }
@@ -388,7 +436,7 @@ fun NfcEmulatorAppScreen(
             when (selectedTab) {
                 0 -> {
                     Text(
-                        text = "스캔된 카드 목록 (최신순)",
+                        text = "스캔된 카드 및 CUID 검사 결과 (최신순)",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -402,7 +450,7 @@ fun NfcEmulatorAppScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "NFC 카드를 스마트폰 뒷면에 태그하세요.",
+                                text = "NFC 카드를 스마트폰 뒷면에 태그하여 CUID 판별 및 UID를 확인하세요.",
                                 color = Color.Gray
                             )
                         }
@@ -548,9 +596,8 @@ fun NfcEmulatorAppScreen(
                             Spacer(modifier = Modifier.height(12.dp))
 
                             Text(
-                                text = "💡 영상 툴(MifareController)과 스마트폰 앱의 차이점:\n" +
-                                        "1. 영상의 MifareController는 Arduino + RC522 하드웨어로 동작하여 7-bit 백도어 커맨드를 직접 전송합니다.\n" +
-                                        "2. 스마트폰 NFC 칩셋은 보안 및 ISO 표준 제약으로 Gen1a 7-bit 백도어가 불가능하며, CUID(Gen2) 태그만 스마트폰 앱에서 덮어쓰기가 가능합니다.",
+                                text = "💡 CUID(Gen2) 검사 기능 안내:\n" +
+                                        "[카드 스캔] 탭에서 카드를 태그하면 비파괴 검사(Non-destructive test)를 통해 해당 카드가 CUID(Gen2) 쓰기 지원 카드인지 즉시 자동 판별해 드립니다.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.DarkGray,
                                 fontWeight = FontWeight.Normal
@@ -604,6 +651,9 @@ fun StatusCardWithAction(message: String, actionLabel: String, onAction: () -> U
 
 @Composable
 fun CardInfoItem(card: ScannedCardInfo, onCopyClick: () -> Unit) {
+    val isCuid = card.detectedType.contains("Gen2") || card.detectedType.contains("CUID")
+    val badgeColor = if (isCuid) Color(0xFF2E7D32) else Color(0xFFC62828)
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -639,7 +689,35 @@ fun CardInfoItem(card: ScannedCardInfo, onCopyClick: () -> Unit) {
                 fontWeight = FontWeight.ExtraBold,
                 color = MaterialTheme.colorScheme.primary
             )
+            
             Spacer(modifier = Modifier.height(8.dp))
+
+            // Detected CUID Card Type Badge
+            Surface(
+                color = badgeColor.copy(alpha = 0.12f),
+                shape = MaterialTheme.shapes.small
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isCuid) Icons.Default.CheckCircle else Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = badgeColor,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = card.detectedType,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = badgeColor
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
             Text("지원 기술(Tech): ${card.techList.joinToString(", ")}", fontSize = 12.sp, color = Color.DarkGray)
         }
     }
