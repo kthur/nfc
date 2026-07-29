@@ -5,6 +5,13 @@ import android.os.Bundle
 import android.util.Log
 import com.example.nfcemulator.util.HexUtils
 
+data class ApduLogItem(
+    val timestamp: String,
+    val direction: String, // "IN" or "OUT"
+    val hexData: String,
+    val summary: String
+)
+
 class MyHostApduService : HostApduService() {
 
     companion object {
@@ -21,10 +28,28 @@ class MyHostApduService : HostApduService() {
 
         // Custom Payload to respond when SELECT AID is received
         var emulationResponsePayload: String = "Hello from Android HCE Emulation!"
+
+        // Live APDU transaction log stream for UI display
+        val apduLogs = androidx.compose.runtime.mutableStateListOf<ApduLogItem>()
+
+        fun clearLogs() {
+            apduLogs.clear()
+        }
+
+        private fun addLog(direction: String, hexData: String, summary: String) {
+            val timeStr = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
+            apduLogs.add(0, ApduLogItem(timeStr, direction, hexData, summary))
+            if (apduLogs.size > 50) {
+                apduLogs.removeAt(apduLogs.lastIndex)
+            }
+        }
     }
 
     override fun processCommandApdu(commandApdu: ByteArray?, extras: Bundle?): ByteArray {
-        if (commandApdu == null) return STATUS_FAILED
+        if (commandApdu == null) {
+            addLog("IN", "NULL", "빈 APDU 명령 수신 실패")
+            return STATUS_FAILED
+        }
 
         val hexCommand = HexUtils.byteArrayToHexString(commandApdu)
         Log.d(TAG, "Received APDU: $hexCommand")
@@ -32,15 +57,24 @@ class MyHostApduService : HostApduService() {
         // Check if SELECT APDU command matches
         if (hexCommand.startsWith(SELECT_APDU_HEADER)) {
             val payloadBytes = emulationResponsePayload.toByteArray(Charsets.UTF_8)
+            val response = payloadBytes + STATUS_SUCCESS
+            val resHex = HexUtils.byteArrayToHexString(response)
+            
+            addLog("IN", hexCommand, "SELECT AID 요청 수신")
+            addLog("OUT", resHex, "페이로드 응답 + [90 00]")
             Log.d(TAG, "Responding with payload: $emulationResponsePayload")
-            return payloadBytes + STATUS_SUCCESS
+            return response
         }
 
-        // Return SUCCESS status for other commands
+        val resHex = HexUtils.byteArrayToHexString(STATUS_SUCCESS)
+        addLog("IN", hexCommand, "기타 APDU 명령 수신")
+        addLog("OUT", resHex, "기본 성공 응답 [90 00]")
         return STATUS_SUCCESS
     }
 
     override fun onDeactivated(reason: Int) {
+        val reasonStr = if (reason == DEACTIVATION_LINK_LOSS) "링크 해제 (Link Loss)" else "다른 AID 선택됨"
+        addLog("SYS", "-", "HCE 비활성화: $reasonStr")
         Log.d(TAG, "Deactivated with reason: $reason")
     }
 }

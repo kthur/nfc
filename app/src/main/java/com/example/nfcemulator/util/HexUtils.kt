@@ -35,6 +35,28 @@ object HexUtils {
         return bcc
     }
 
+    fun calculateBccHex(uidHex: String): String? {
+        val clean = uidHex.replace(":", "").replace(" ", "").trim()
+        if (clean.length != 8 || !isValidHex(clean)) return null
+        return try {
+            val bytes = hexStringToByteArray(clean)
+            val bcc = calculateBcc(bytes)
+            byteArrayToHexString(byteArrayOf(bcc))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun isValidHex(s: String): Boolean {
+        val clean = s.replace(":", "").replace(" ", "").trim()
+        return clean.isNotEmpty() && clean.all { it in "0123456789abcdefABCDEF" } && (clean.length % 2 == 0)
+    }
+
+    fun formatHexWithSpaces(s: String): String {
+        val clean = s.replace(":", "").replace(" ", "").trim().uppercase()
+        return clean.chunked(2).joinToString(" ")
+    }
+
     // Build Mifare Classic Block 0 payload using 4-byte UID
     fun createBlock0(uidHex: String): ByteArray {
         val uidBytes = hexStringToByteArray(uidHex)
@@ -51,10 +73,19 @@ object HexUtils {
         block0[6] = 0x04.toByte()
         block0[7] = 0x00.toByte()
         
-        // 8-15: Default manufacturer extra info (commonly 0x1c, 0x02, 0x20, 0x90, 0x00, 0x2d, 0x00, 0x10)
+        // 8-15: Default manufacturer extra info
         val defaultExtra = byteArrayOf(0x1c.toByte(), 0x02.toByte(), 0x20.toByte(), 0x90.toByte(), 0x00.toByte(), 0x2d.toByte(), 0x00.toByte(), 0x10.toByte())
         System.arraycopy(defaultExtra, 0, block0, 8, 8)
         
         return block0
+    }
+
+    fun formatBlock0String(uidHex: String): String {
+        return try {
+            val bytes = createBlock0(uidHex)
+            byteArrayToHexString(bytes).chunked(2).joinToString(" ")
+        } catch (e: Exception) {
+            "Invalid UID"
+        }
     }
 }
