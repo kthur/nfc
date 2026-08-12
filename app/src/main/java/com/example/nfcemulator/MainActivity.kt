@@ -77,8 +77,8 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         isNfcEnabled = nfcAdapter?.isEnabled == true
 
         setContent {
-            NfcIntuitiveAppTheme {
-                NfcIntuitiveAppScreen(
+            NfcSleekAppTheme {
+                NfcSleekAppScreen(
                     isNfcAvailable = isNfcAvailable,
                     isNfcEnabled = isNfcEnabled,
                     scannedCards = scannedCards,
@@ -166,7 +166,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
 
             runOnUiThread {
                 scannedCards.add(0, cardInfo)
-                Toast.makeText(this, "✅ 카드가 정상 읽혔습니다!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "✅ 카드가 정상 스캔되었습니다!", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -187,9 +187,9 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                     if (block0 != null && block0.size == 16) {
                         try {
                             mifare.writeBlock(0, block0)
-                            return Pair(true, "복제 쓰기 가능한 카드입니다 (CUID) ✅")
+                            return Pair(true, "복제 쓰기 가능 카드 (CUID) ✅")
                         } catch (e: Exception) {
-                            return Pair(false, "원본 카드입니다 (복제 대상 공태그로 쓰기 권장) ℹ️")
+                            return Pair(false, "원본 카드 (복제용 공태그로 쓰기 권장) ℹ️")
                         }
                     }
                 } else {
@@ -297,7 +297,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NfcIntuitiveAppScreen(
+fun NfcSleekAppScreen(
     isNfcAvailable: Boolean,
     isNfcEnabled: Boolean,
     scannedCards: List<ScannedCardInfo>,
@@ -322,8 +322,15 @@ fun NfcIntuitiveAppScreen(
                         Box(
                             modifier = Modifier
                                 .size(36.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(MaterialTheme.colorScheme.primary),
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    Brush.linearGradient(
+                                        colors = listOf(
+                                            MaterialTheme.colorScheme.primary,
+                                            Color(0xFF0284C7)
+                                        )
+                                    )
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -335,8 +342,8 @@ fun NfcIntuitiveAppScreen(
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
-                            Text("NFC 복제기", fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                            Text("1초 만에 쉬운 NFC 카드 스캔 & 복제", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("NFC Cloner", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+                            Text("Smart Card Reader & Writer", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 },
@@ -358,31 +365,30 @@ fun NfcIntuitiveAppScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background)
+                .padding(16.dp)
         ) {
-            // NFC Readiness & Location Guide Header
-            IntuitiveNfcHeader(
+            // Sleek Device NFC Status Banner
+            SleekNfcStatusBanner(
                 isNfcAvailable = isNfcAvailable,
                 isNfcEnabled = isNfcEnabled,
                 onOpenNfcSettings = onOpenNfcSettings
             )
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // Step Navigation Selector
+            // Step Selector Switcher Segment
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                WizardStepButton(
+                SleekStepSegment(
                     stepNumber = "1",
-                    title = "원본 카드 읽기",
+                    title = "원본 카드 스캔",
                     isSelected = activeStep == 0,
                     modifier = Modifier.weight(1f),
                     onClick = { activeStep = 0 }
                 )
-                WizardStepButton(
+                SleekStepSegment(
                     stepNumber = "2",
                     title = "새 카드로 복제",
                     isSelected = activeStep == 1,
@@ -391,22 +397,23 @@ fun NfcIntuitiveAppScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
+            // Main Full-Screen Body Container (weight(1f) fills available height cleanly!)
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp)
+                    .fillMaxWidth()
+                    .weight(1f)
             ) {
                 when (activeStep) {
-                    0 -> Step1ReadContent(
+                    0 -> SleekStep1ScanBody(
                         scannedCards = scannedCards,
                         onCopyToWriteStep = { uid ->
                             targetUidInput = uid
                             activeStep = 1
                         }
                     )
-                    1 -> Step2WriteContent(
+                    1 -> SleekStep2WriteBody(
                         targetUidInput = targetUidInput,
                         onTargetUidChange = { targetUidInput = it },
                         recentScannedCards = scannedCards,
@@ -418,21 +425,17 @@ fun NfcIntuitiveAppScreen(
     }
 }
 
-// Intuitive NFC Header with Location Guide
+// Sleek Status Banner
 @Composable
-fun IntuitiveNfcHeader(
+fun SleekNfcStatusBanner(
     isNfcAvailable: Boolean,
     isNfcEnabled: Boolean,
     onOpenNfcSettings: () -> Unit
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+    Surface(
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isNfcEnabled) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else Color(0xFFFEF2F2)
-        )
+        color = if (isNfcEnabled) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f) else Color(0xFFFEF2F2),
+        modifier = Modifier.fillMaxWidth()
     ) {
         Row(
             modifier = Modifier
@@ -440,24 +443,24 @@ fun IntuitiveNfcHeader(
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = if (isNfcEnabled) Icons.Default.CheckCircle else Icons.Default.Warning,
-                contentDescription = null,
-                tint = if (isNfcEnabled) Color(0xFF10B981) else Color(0xFFEF4444),
-                modifier = Modifier.size(24.dp)
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(if (isNfcEnabled) Color(0xFF10B981) else Color(0xFFEF4444))
             )
             Spacer(modifier = Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = if (!isNfcAvailable) "NFC 미지원 스마트폰입니다" 
+                    text = if (!isNfcAvailable) "NFC 미지원 기기입니다" 
                            else if (!isNfcEnabled) "NFC가 꺼져 있습니다 📴" 
-                           else "NFC 준비 완료! 🟢",
+                           else "NFC 준비 완료 🟢",
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp
                 )
                 Text(
-                    text = if (!isNfcEnabled) "아래 [NFC 켜기] 버튼을 눌러 활성화해 주세요."
-                           else "📱 카드를 휴대폰 뒷면 상단(카메라 주변)에 대주세요.",
+                    text = if (!isNfcEnabled) "아래 버튼을 눌러 안드로이드 NFC를 활성화하세요."
+                           else "📱 카드를 스마트폰 뒷면 상단(카메라 부근)에 대주세요.",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -465,8 +468,8 @@ fun IntuitiveNfcHeader(
             if (!isNfcEnabled && isNfcAvailable) {
                 Button(
                     onClick = onOpenNfcSettings,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
-                    modifier = Modifier.height(34.dp)
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                    modifier = Modifier.height(32.dp)
                 ) {
                     Text("NFC 켜기", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
@@ -476,7 +479,7 @@ fun IntuitiveNfcHeader(
 }
 
 @Composable
-fun WizardStepButton(
+fun SleekStepSegment(
     stepNumber: String,
     title: String,
     isSelected: Boolean,
@@ -485,17 +488,18 @@ fun WizardStepButton(
 ) {
     val bgColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
     val textColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
-    val borderColor = if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray.copy(alpha = 0.5f)
+    val borderColor = if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray.copy(alpha = 0.4f)
 
     Surface(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .border(1.5.dp, borderColor, RoundedCornerShape(12.dp))
             .clickable(onClick = onClick),
-        color = bgColor
+        color = bgColor,
+        shadowElevation = if (isSelected) 4.dp else 0.dp
     ) {
         Row(
-            modifier = Modifier.padding(vertical = 10.dp, horizontal = 12.dp),
+            modifier = Modifier.padding(vertical = 12.dp, horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
@@ -514,100 +518,123 @@ fun WizardStepButton(
     }
 }
 
-// Step 1: Read Card Content
+// Step 1: Scan Full Screen Body Layout
 @Composable
-fun Step1ReadContent(
+fun SleekStep1ScanBody(
     scannedCards: List<ScannedCardInfo>,
     onCopyToWriteStep: (String) -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item {
-            val lastCard = scannedCards.firstOrNull()
-            Card(
+    val lastCard = scannedCards.firstOrNull()
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Hero Card Container (Fills upper space cleanly!)
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            shape = RoundedCornerShape(20.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                shape = RoundedCornerShape(20.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    .fillMaxSize()
+                    .padding(20.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    if (lastCard == null) {
-                        PulsingTouchTarget(
-                            title = "카드를 휴대폰 뒷면에 대세요",
-                            subtitle = "원본 카드의 고유 번호(UID)를 읽어옵니다."
-                        )
-                    } else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("가장 최근 읽은 카드", fontSize = 12.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        val formattedUid = lastCard.uid.chunked(2).joinToString(" : ")
-                        Text(
-                            text = formattedUid,
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.primary,
-                            letterSpacing = 1.sp
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Surface(
-                            color = if (lastCard.isCuidSupported) Color(0xFF10B981).copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(8.dp)
+                if (lastCard == null) {
+                    SleekRadarPulseHero(
+                        title = "카드를 스마트폰 뒷면에 밀착하세요",
+                        subtitle = "원본 카드의 고유 번호(UID)를 자동 인식합니다."
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
                         ) {
-                            Text(
-                                text = lastCard.statusText,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (lastCard.isCuidSupported) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("스캔 성공! 원본 카드 정보", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
                         }
 
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("CARD UID", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            val formattedUid = lastCard.uid.chunked(2).joinToString(" : ")
+                            Text(
+                                text = formattedUid,
+                                fontSize = 28.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.primary,
+                                letterSpacing = 1.sp
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Surface(
+                                color = if (lastCard.isCuidSupported) Color(0xFF10B981).copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = lastCard.statusText,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (lastCard.isCuidSupported) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
 
                         Button(
                             onClick = { onCopyToWriteStep(lastCard.uid) },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(46.dp),
-                            shape = RoundedCornerShape(12.dp)
+                                .height(50.dp),
+                            shape = RoundedCornerShape(14.dp)
                         ) {
-                            Text("👉 이 카드의 UID로 복제하기", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Icon(Icons.Default.CopyAll, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("👉 이 카드의 UID로 복제하기", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
             }
         }
 
-        if (scannedCards.size > 1) {
-            item {
-                Text("이전 스캔 내역 (${scannedCards.size}건)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        // Bottom Scanned Cards History Section
+        if (scannedCards.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("스캔 내역 (${scannedCards.size}건)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text("터치 시 복제 모드 전환", fontSize = 10.sp, color = Color.Gray)
             }
+            Spacer(modifier = Modifier.height(6.dp))
 
-            items(scannedCards.drop(1), key = { it.id }) { card ->
-                SimpleCardHistoryItem(card = card, onSelectToClone = { onCopyToWriteStep(card.uid) })
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 140.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(scannedCards, key = { it.id }) { card ->
+                    SleekHistoryRowItem(card = card, onSelectToClone = { onCopyToWriteStep(card.uid) })
+                }
             }
         }
     }
 }
 
-// Step 2: Write/Clone Card Content
+// Step 2: Write Full Screen Body Layout
 @Composable
-fun Step2WriteContent(
+fun SleekStep2WriteBody(
     targetUidInput: String,
     onTargetUidChange: (String) -> Unit,
     recentScannedCards: List<ScannedCardInfo>,
@@ -616,119 +643,140 @@ fun Step2WriteContent(
     val cleanUid = targetUidInput.replace(":", "").replace(" ", "").trim()
     val isValidHex = cleanUid.length == 8 && HexUtils.isValidHex(cleanUid)
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isValidHex) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surface
-                )
+    Column(modifier = Modifier.fillMaxSize()) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            shape = RoundedCornerShape(20.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isValidHex) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    if (isValidHex) {
-                        Text("복제 준비 완료! 🎯", fontWeight = FontWeight.ExtraBold, fontSize = 17.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "복제할 UID: ${cleanUid.chunked(2).joinToString(" : ")}",
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
+                if (isValidHex) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primary,
+                                shape = CircleShape
+                            ) {
+                                Text(
+                                    "복제 준비 완료 🎯",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = cleanUid.chunked(2).joinToString(" : "),
+                                fontSize = 26.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
 
-                        PulsingTouchTarget(
+                        SleekRadarPulseHero(
                             title = "새 복제용(CUID) 카드를 대세요",
-                            subtitle = "휴대폰 뒷면에 대면 1초 만에 쓰기가 완료됩니다."
+                            subtitle = "카드를 대면 1초 만에 UID 덮어쓰기가 완료됩니다."
                         )
-                    } else {
-                        Icon(Icons.Default.Info, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(36.dp))
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("복제할 카드의 UID를 먼저 선택해 주세요", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+
+                        Text("Tip: CUID(Gen2) 복제 전용 공태그에 쓰기가 가능합니다.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(Icons.Default.Info, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(40.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text("복제할 카드의 UID를 지정해 주세요", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text("1단계에서 원본 카드를 스캔하면 자동으로 세팅됩니다.", fontSize = 12.sp, color = Color.Gray)
-                        Spacer(modifier = Modifier.height(14.dp))
-                        OutlinedButton(onClick = onBackToStep1) {
-                            Text("1단계로 돌아가서 카드 읽기 ➔")
+                        Text("1단계에서 원본 카드를 스캔하면 자동으로 지정됩니다.", fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(onClick = onBackToStep1) {
+                            Text("1단계 원본 카드 스캔하러 가기 ➔", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
             }
         }
 
-        // Custom UID Input Accordion Card
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Text("직접 UID 지정 (선택 사항)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-                    OutlinedTextField(
-                        value = targetUidInput,
-                        onValueChange = onTargetUidChange,
-                        label = { Text("대상 UID (8자리 16진수)") },
-                        placeholder = { Text("예: AABBCCDD") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (recentScannedCards.isNotEmpty()) {
-                            AssistChip(
-                                onClick = { onTargetUidChange(recentScannedCards.first().uid) },
-                                label = { Text("최근 스캔 UID 📋", fontSize = 11.sp) }
-                            )
+        // Manual UID Input Row Card
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("직접 UID 지정 (8자리 Hex)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    if (recentScannedCards.isNotEmpty()) {
+                        TextButton(
+                            onClick = { onTargetUidChange(recentScannedCards.first().uid) },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("최근 스캔 UID 불러오기 📋", fontSize = 11.sp)
                         }
-                        AssistChip(
-                            onClick = {
-                                val randomBytes = ByteArray(4)
-                                Random.nextBytes(randomBytes)
-                                onTargetUidChange(HexUtils.byteArrayToHexString(randomBytes))
-                            },
-                            label = { Text("랜덤 UID 생성 🎲", fontSize = 11.sp) }
-                        )
                     }
                 }
+                Spacer(modifier = Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = targetUidInput,
+                    onValueChange = onTargetUidChange,
+                    placeholder = { Text("예: AABBCCDD", fontSize = 12.sp) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    singleLine = true
+                )
             }
         }
     }
 }
 
 @Composable
-fun PulsingTouchTarget(title: String, subtitle: String) {
+fun SleekRadarPulseHero(title: String, subtitle: String) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val scale by infiniteTransition.animateFloat(
-        initialValue = 0.9f,
+        initialValue = 0.85f,
         targetValue = 1.35f,
         animationSpec = infiniteRepeatable(tween(1300, easing = FastOutSlowInEasing), RepeatMode.Restart),
         label = "scale"
     )
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(110.dp)) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(120.dp)) {
             Box(
                 modifier = Modifier
-                    .size(86.dp)
+                    .size(96.dp)
                     .scale(scale)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
             )
             Box(
                 modifier = Modifier
-                    .size(64.dp)
+                    .size(70.dp)
                     .clip(CircleShape)
                     .background(
                         Brush.radialGradient(
@@ -738,49 +786,50 @@ fun PulsingTouchTarget(title: String, subtitle: String) {
                             )
                         )
                     )
-                    .shadow(6.dp, CircleShape),
+                    .shadow(8.dp, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Nfc, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
+                Icon(Icons.Default.Nfc, contentDescription = null, tint = Color.White, modifier = Modifier.size(34.dp))
             }
         }
-        Spacer(modifier = Modifier.height(10.dp))
-        Text(title, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Spacer(modifier = Modifier.height(2.dp))
         Text(subtitle, fontSize = 11.sp, color = Color.Gray, textAlign = TextAlign.Center)
     }
 }
 
 @Composable
-fun SimpleCardHistoryItem(card: ScannedCardInfo, onSelectToClone: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+fun SleekHistoryRowItem(card: ScannedCardInfo, onSelectToClone: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelectToClone),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surface
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text(card.uid.chunked(2).joinToString(" : "), fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text(card.timestamp, fontSize = 10.sp, color = Color.Gray)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.CreditCard, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(card.uid.chunked(2).joinToString(" : "), fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             }
-            TextButton(
-                onClick = onSelectToClone,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-            ) {
-                Text("복제 ➔", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(card.timestamp, fontSize = 10.sp, color = Color.Gray)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("복제 ➔", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             }
         }
     }
 }
 
-// Simple Theme Setup
+// Sleek Theme Setup
 @Composable
-fun NfcIntuitiveAppTheme(
+fun NfcSleekAppTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
