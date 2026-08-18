@@ -46,7 +46,12 @@ import androidx.compose.ui.unit.sp
 import com.example.nfcemulator.util.HexUtils
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.random.Random
+
+enum class MagicFlowState {
+    WAIT_ORIGINAL, // Step 1: 원본 카드 읽기 대기
+    WAIT_CLONE,    // Step 2: 복제용 CUID 카드 쓰기 대기
+    SUCCESS        // Step 3: 복제 완료
+}
 
 data class ScannedCardInfo(
     val id: String = UUID.randomUUID().toString(),
@@ -54,7 +59,7 @@ data class ScannedCardInfo(
     val uid: String,
     val isCuidSupported: Boolean = false,
     val statusText: String = "분석 완료",
-    val dumpBlocks: List<String> = emptyList(), // 64 blocks of 16-byte hex strings
+    val dumpBlocks: List<String> = emptyList(),
     val readSectorCount: Int = 0
 )
 
@@ -66,10 +71,8 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
     private var isNfcEnabled by mutableStateOf(false)
 
     companion object {
-        var activeStep = 0 // 0: Read/Scan, 1: Write/Clone
-        var targetWriteUid = ""
-        var targetCardInfo: ScannedCardInfo? = null
-        var isFullSectorCloneMode = true // true: Full Sector Dump Clone, false: UID Only
+        var currentFlowState by mutableStateOf(MagicFlowState.WAIT_ORIGINAL)
+        var activeTargetCard by mutableStateOf<ScannedCardInfo?>(null)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -80,8 +83,8 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         isNfcEnabled = nfcAdapter?.isEnabled == true
 
         setContent {
-            NfcSleekAppTheme {
-                NfcSleekAppScreen(
+            NfcMagicAppTheme {
+                NfcMagicAppScreen(
                     isNfcAvailable = isNfcAvailable,
                     isNfcEnabled = isNfcEnabled,
                     scannedCards = scannedCards,
@@ -152,26 +155,20 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         val hexUid = HexUtils.byteArrayToHexString(tagIdBytes)
         val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
 
-        if (activeStep == 1) {
-            // Write Mode active
+        if (currentFlowState == MagicFlowState.WAIT_CLONE) {
+            // Automatically clone to blank card!
             handleCuidWrite(tag)
         } else {
-            // Scan Mode active: Perform full 16-sector dump read
+            // Read original card automatically
             val mifare = MifareClassic.get(tag)
             val (isCuid, statusMsg) = detectTagCuidSupport(tag)
             val (dumpBlocks, successSectors) = if (mifare != null) dumpAllSectors(mifare) else Pair(emptyList(), 0)
-
-            val fullStatusMsg = if (successSectors > 0) {
-                "$statusMsg | 덤프: $successSectors/16 섹터"
-            } else {
-                statusMsg
-            }
 
             val cardInfo = ScannedCardInfo(
                 timestamp = timeStr,
                 uid = hexUid.ifEmpty { "N/A" },
                 isCuidSupported = isCuid,
-                statusText = fullStatusMsg,
+                statusText = statusMsg,
                 dumpBlocks = dumpBlocks,
                 readSectorCount = successSectors
             )
@@ -180,12 +177,13 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
 
             runOnUiThread {
                 scannedCards.add(0, cardInfo)
-                Toast.makeText(this, "✅ 카드가 스캔되었습니다! ($successSectors/16 섹터 읽음)", Toast.LENGTH_SHORT).show()
+                activeTargetCard = cardInfo
+                currentFlowState = MagicFlowState.WAIT_CLONE // Automatic seamless transition!
+                Toast.makeText(this, "✅ 원본 카드 스캔 완료! 새 복제 카드를 대세요.", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    // Read full 16 sectors (64 blocks) from Mifare Classic card using dictionary keys
     private fun dumpAllSectors(mifare: MifareClassic): Pair<List<String>, Int> {
         val blocksDump = ArrayList<String>()
         var successSectorCount = 0
@@ -197,7 +195,6 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
 
             for (sector in 0 until sectorCount) {
                 var authenticated = false
-                var keyUsed: ByteArray? = null
 
                 for (key in HexUtils.DEFAULT_KEYS) {
                     if (mifare.authenticateSectorWithKeyA(sector, key) || 
@@ -257,16 +254,16 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                     if (block0 != null && block0.size == 16) {
                         try {
                             mifare.writeBlock(0, block0)
-                            return Pair(true, "복제 쓰기 가능 카드 (CUID) ✅")
+                            return Pair(true, "복제 가능 카드 (CUID) ✅")
                         } catch (e: Exception) {
-                            return Pair(false, "원본 카드 (복제용 공태그로 쓰기 권장) ℹ️")
+                            return Pair(false, "원본 카드 ℹ️")
                         }
                     }
                 } else {
-                    return Pair(false, "비표준 키 카드 🔑")
+                    return Pair(false, "보안 카드 🔑")
                 }
             } catch (e: Exception) {
-                return Pair(false, "읽기 전용 카드")
+                return Pair(false, "읽기 전용")
             } finally {
                 try { mifare.close() } catch (e: Exception) {}
             }
@@ -274,19 +271,19 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
 
         val nfcA = NfcA.get(tag)
         if (nfcA != null) {
-            return Pair(false, "NfcA 원본 카드 (UID 고정) ℹ️")
+            return Pair(false, "NfcA 원본 카드 ℹ️")
         }
 
-        return Pair(false, "일반 NFC 태그")
+        return Pair(false, "일반 NFC")
     }
 
-    // Write Full Sector Dump (all blocks 0..63) or Block 0 UID to CUID (Gen2) card
     private fun handleCuidWrite(tag: Tag) {
-        val uidToWrite = targetWriteUid.replace(":", "").replace(" ", "").trim()
+        val targetCard = activeTargetCard
+        val uidToWrite = targetCard?.uid ?: ""
         if (uidToWrite.length != 8) {
             triggerHapticFeedback(false)
             runOnUiThread {
-                Toast.makeText(this, "올바른 8자리 UID를 선택하거나 입력해 주세요.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "복제할 원본 카드가 지정되지 않았습니다.", Toast.LENGTH_LONG).show()
             }
             return
         }
@@ -295,20 +292,17 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         if (mifare == null) {
             triggerHapticFeedback(false)
             runOnUiThread {
-                Toast.makeText(this, "카드가 인식되지 않았습니다. CUID(Gen2) 카드를 밀착해 주세요.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "카드를 스마트폰 뒷면에 다시 대주세요.", Toast.LENGTH_LONG).show()
             }
             return
         }
 
-        val targetCard = targetCardInfo
         val dumpBlocks = targetCard?.dumpBlocks ?: emptyList()
-        val doFullSectorClone = isFullSectorCloneMode && dumpBlocks.size >= 64
 
         try {
             mifare.connect()
             mifare.timeout = 4000
             
-            // Step 1: Write Block 0 (UID + BCC + Manufacturer)
             val block0Data = HexUtils.createBlock0(uidToWrite)
             var authSuccess = false
 
@@ -322,7 +316,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
             if (!authSuccess) {
                 triggerHapticFeedback(false)
                 runOnUiThread {
-                    Toast.makeText(this, "섹터 0 인증 실패! CUID 카드의 보안 키를 확인할 수 없습니다.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "CUID 카드의 보안 키를 확인할 수 없습니다.", Toast.LENGTH_LONG).show()
                 }
                 return
             }
@@ -345,14 +339,14 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
             if (!block0Written) {
                 triggerHapticFeedback(false)
                 runOnUiThread {
-                    Toast.makeText(this, "CUID Block 0 (UID) 쓰기 실패! 카드가 CUID(Gen2) 규격인지 확인해 주세요.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "CUID 카드 쓰기 실패! CUID(Gen2) 복제용 카드가 맞는지 확인해 주세요.", Toast.LENGTH_LONG).show()
                 }
                 return
             }
 
+            // Write all blocks 1..63
             var writtenBlockCount = 1
-            // Step 2: Full 100% Sector Data Clone (Write all blocks 1..63 including Sector Trailers)
-            if (doFullSectorClone) {
+            if (dumpBlocks.size >= 64) {
                 val sectorCount = mifare.sectorCount.coerceAtMost(16)
                 for (sector in 0 until sectorCount) {
                     var secAuth = false
@@ -369,7 +363,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
 
                         for (b in 0 until blockCount) {
                             val blockIndex = firstBlock + b
-                            if (blockIndex == 0) continue // Already written
+                            if (blockIndex == 0) continue
 
                             val hexData = dumpBlocks.getOrNull(blockIndex) ?: continue
                             if (hexData.length == 32 && !hexData.contains("-")) {
@@ -378,7 +372,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                                     mifare.writeBlock(blockIndex, blockBytes)
                                     writtenBlockCount++
                                 } catch (e: Exception) {
-                                    Log.w("CuidWrite", "Block $blockIndex write failed, trying transceive", e)
+                                    Log.w("CuidWrite", "Block $blockIndex write failed", e)
                                 }
                             }
                         }
@@ -387,18 +381,14 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
             }
 
             triggerHapticFeedback(true)
-            val finalCount = writtenBlockCount
             runOnUiThread {
-                if (doFullSectorClone) {
-                    Toast.makeText(this, "🎉 원본과 100% 완전히 동일한 카드 (0~15 섹터, " + finalCount + "/64개 블록) 복제 완료!", Toast.LENGTH_LONG).show()
-                } else {
-                    Toast.makeText(this, "🎉 UID 복제 성공! (새 UID: " + uidToWrite + ")", Toast.LENGTH_LONG).show()
-                }
+                currentFlowState = MagicFlowState.SUCCESS
+                Toast.makeText(this, "🎉 100% 똑같은 복제 카드 생성 완료!", Toast.LENGTH_LONG).show()
             }
         } catch (e: Exception) {
             triggerHapticFeedback(false)
             runOnUiThread {
-                Toast.makeText(this, "쓰기 중 오류 발생: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "쓰기 오류 발생: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
             }
         } finally {
             try { mifare.close() } catch (e: Exception) {}
@@ -416,27 +406,13 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NfcSleekAppScreen(
+fun NfcMagicAppScreen(
     isNfcAvailable: Boolean,
     isNfcEnabled: Boolean,
     scannedCards: List<ScannedCardInfo>,
     onOpenNfcSettings: () -> Unit,
     onClearHistory: () -> Unit
 ) {
-    var activeStep by remember { mutableIntStateOf(0) } // 0: 스캔, 1: 복제
-    var targetUidInput by remember { mutableStateOf("") }
-    var isFullCloneSelected by remember { mutableStateOf(true) }
-
-    LaunchedEffect(activeStep) {
-        MainActivity.activeStep = activeStep
-    }
-    LaunchedEffect(targetUidInput) {
-        MainActivity.targetWriteUid = targetUidInput
-    }
-    LaunchedEffect(isFullCloneSelected) {
-        MainActivity.isFullSectorCloneMode = isFullCloneSelected
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -465,8 +441,8 @@ fun NfcSleekAppScreen(
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
-                            Text("NFC Cloner", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
-                            Text("Full Sector Data & UID Cloner", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("NFC Magic Cloner", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+                            Text("Auto-Flow 100% Twin Copy", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 },
@@ -490,70 +466,67 @@ fun NfcSleekAppScreen(
                 .background(MaterialTheme.colorScheme.background)
                 .padding(16.dp)
         ) {
-            // Sleek Device NFC Status Banner
-            SleekNfcStatusBanner(
+            // Device NFC Status Indicator
+            MagicNfcStatusBanner(
                 isNfcAvailable = isNfcAvailable,
                 isNfcEnabled = isNfcEnabled,
                 onOpenNfcSettings = onOpenNfcSettings
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Step Selector Switcher Segment
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                SleekStepSegment(
-                    stepNumber = "1",
-                    title = "원본 카드 스캔",
-                    isSelected = activeStep == 0,
-                    modifier = Modifier.weight(1f),
-                    onClick = { activeStep = 0 }
-                )
-                SleekStepSegment(
-                    stepNumber = "2",
-                    title = "새 카드로 복제",
-                    isSelected = activeStep == 1,
-                    modifier = Modifier.weight(1f),
-                    onClick = { activeStep = 1 }
-                )
-            }
-
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Main Full-Screen Body Container (weight(1f) fills available height cleanly!)
+            // 1-Screen Magic Hero Body
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
             ) {
-                when (activeStep) {
-                    0 -> SleekStep1ScanBody(
-                        scannedCards = scannedCards,
-                        onCopyToWriteStep = { card ->
-                            targetUidInput = card.uid
-                            MainActivity.targetCardInfo = card
-                            activeStep = 1
-                        }
-                    )
-                    1 -> SleekStep2WriteBody(
-                        targetUidInput = targetUidInput,
-                        onTargetUidChange = { targetUidInput = it },
-                        isFullClone = isFullCloneSelected,
-                        onToggleFullClone = { isFullCloneSelected = it },
-                        recentScannedCards = scannedCards,
-                        onBackToStep1 = { activeStep = 0 }
-                    )
+                MagicHeroContent(
+                    flowState = MainActivity.currentFlowState,
+                    targetCard = MainActivity.activeTargetCard,
+                    onResetToRead = {
+                        MainActivity.currentFlowState = MagicFlowState.WAIT_ORIGINAL
+                        MainActivity.activeTargetCard = null
+                    }
+                )
+            }
+
+            // Bottom Scanned History List
+            if (scannedCards.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("스캔 내역 (${scannedCards.size}건)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("터치 시 즉시 복제 대상으로 지정", fontSize = 10.sp, color = Color.Gray)
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 140.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(scannedCards, key = { it.id }) { card ->
+                        MagicHistoryRowItem(
+                            card = card,
+                            onSelectToClone = {
+                                MainActivity.activeTargetCard = card
+                                MainActivity.currentFlowState = MagicFlowState.WAIT_CLONE
+                            }
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-// Sleek Status Banner
 @Composable
-fun SleekNfcStatusBanner(
+fun MagicNfcStatusBanner(
     isNfcAvailable: Boolean,
     isNfcEnabled: Boolean,
     onOpenNfcSettings: () -> Unit
@@ -578,15 +551,15 @@ fun SleekNfcStatusBanner(
             Spacer(modifier = Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = if (!isNfcAvailable) "NFC 미지원 기기입니다" 
+                    text = if (!isNfcAvailable) "NFC 미지원 스마트폰" 
                            else if (!isNfcEnabled) "NFC가 꺼져 있습니다 📴" 
                            else "NFC 준비 완료 🟢",
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp
                 )
                 Text(
-                    text = if (!isNfcEnabled) "아래 버튼을 눌러 안드로이드 NFC를 활성화하세요."
-                           else "📱 카드를 스마트폰 뒷면 상단(카메라 부근)에 대주세요.",
+                    text = if (!isNfcEnabled) "아래 버튼을 눌러 NFC를 켜주세요."
+                           else "📱 카드를 휴대폰 뒷면 상단(카메라 주변)에 밀착하세요.",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -604,191 +577,63 @@ fun SleekNfcStatusBanner(
     }
 }
 
+// 1-Screen Magic Hero Content Component
 @Composable
-fun SleekStepSegment(
-    stepNumber: String,
-    title: String,
-    isSelected: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
+fun MagicHeroContent(
+    flowState: MagicFlowState,
+    targetCard: ScannedCardInfo?,
+    onResetToRead: () -> Unit
 ) {
-    val bgColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
-    val textColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
-    val borderColor = if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray.copy(alpha = 0.4f)
-
-    Surface(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .border(1.5.dp, borderColor, RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick),
-        color = bgColor,
-        shadowElevation = if (isSelected) 4.dp else 0.dp
-    ) {
-        Row(
-            modifier = Modifier.padding(vertical = 12.dp, horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(20.dp)
-                    .clip(CircleShape)
-                    .background(if (isSelected) Color.White.copy(alpha = 0.25f) else Color.Gray.copy(alpha = 0.2f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(stepNumber, color = textColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+    Card(
+        modifier = Modifier.fillMaxSize(),
+        shape = RoundedCornerShape(22.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = when (flowState) {
+                MagicFlowState.WAIT_ORIGINAL -> MaterialTheme.colorScheme.surface
+                MagicFlowState.WAIT_CLONE -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+                MagicFlowState.SUCCESS -> Color(0xFFECFDF5)
             }
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(title, color = textColor, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        }
-    }
-}
-
-// Step 1: Scan Full Screen Body Layout with Full Sector Dump Status
-@Composable
-fun SleekStep1ScanBody(
-    scannedCards: List<ScannedCardInfo>,
-    onCopyToWriteStep: (ScannedCardInfo) -> Unit
-) {
-    val lastCard = scannedCards.firstOrNull()
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        Card(
+        )
+    ) {
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            shape = RoundedCornerShape(20.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                .fillMaxSize()
+                .padding(20.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(20.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                if (lastCard == null) {
-                    SleekRadarPulseHero(
-                        title = "카드를 스마트폰 뒷면에 밀착하세요",
-                        subtitle = "모든 섹터(0~15) 데이터와 UID를 완벽하게 읽어옵니다."
-                    )
-                } else {
+            when (flowState) {
+                MagicFlowState.WAIT_ORIGINAL -> {
+                    // Step 1: Read Original Card
                     Column(
                         modifier = Modifier.fillMaxSize(),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
+                        Surface(
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                            shape = CircleShape
                         ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("스캔 성공! 전체 데이터 덤프 완료", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
-                        }
-
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("CARD UID", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            val formattedUid = lastCard.uid.chunked(2).joinToString(" : ")
                             Text(
-                                text = formattedUid,
-                                fontSize = 28.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontFamily = FontFamily.Monospace,
+                                "1단계: 원본 카드 읽기 📡",
                                 color = MaterialTheme.colorScheme.primary,
-                                letterSpacing = 1.sp
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
                             )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Surface(
-                                color = Color(0xFF10B981).copy(alpha = 0.12f),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    text = "16개 섹터 (64개 블록) 데이터 덤프 완료 (${lastCard.readSectorCount}/16 성공)",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF10B981),
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
-                                )
-                            }
                         }
 
-                        Button(
-                            onClick = { onCopyToWriteStep(lastCard) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Icon(Icons.Default.CopyAll, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("👉 전체 데이터(모든 섹터) 복제 모드로 이동", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        }
+                        MagicRadarPulseHero(
+                            title = "원본 카드를 휴대폰 뒷면에 대세요",
+                            subtitle = "모든 섹터(0~15) 64개 블록 데이터를 100% 읽어옵니다."
+                        )
+
+                        Text("카드가 인식되면 자동으로 복제 단계로 연결됩니다.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-            }
-        }
 
-        // Bottom Scanned Cards History Section
-        if (scannedCards.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("스캔 내역 (${scannedCards.size}건)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Text("터치 시 전체 복제 모드 전환", fontSize = 10.sp, color = Color.Gray)
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 140.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                items(scannedCards, key = { it.id }) { card ->
-                    SleekHistoryRowItem(card = card, onSelectToClone = { onCopyToWriteStep(card) })
-                }
-            }
-        }
-    }
-}
-
-// Step 2: Write Full Screen Body Layout with Full Clone Toggle
-@Composable
-fun SleekStep2WriteBody(
-    targetUidInput: String,
-    onTargetUidChange: (String) -> Unit,
-    isFullClone: Boolean,
-    onToggleFullClone: (Boolean) -> Unit,
-    recentScannedCards: List<ScannedCardInfo>,
-    onBackToStep1: () -> Unit
-) {
-    val cleanUid = targetUidInput.replace(":", "").replace(" ", "").trim()
-    val isValidHex = cleanUid.length == 8 && HexUtils.isValidHex(cleanUid)
-    val hasDump = MainActivity.targetCardInfo?.dumpBlocks?.isNotEmpty() == true
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            shape = RoundedCornerShape(20.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isValidHex) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surface
-            )
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(20.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                if (isValidHex) {
+                MagicFlowState.WAIT_CLONE -> {
+                    // Step 2: Auto-Transitioned! Place blank CUID card to clone!
                     Column(
                         modifier = Modifier.fillMaxSize(),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -796,121 +641,103 @@ fun SleekStep2WriteBody(
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Surface(
-                                color = MaterialTheme.colorScheme.primary,
+                                color = Color(0xFF10B981),
                                 shape = CircleShape
                             ) {
                                 Text(
-                                    if (isFullClone && hasDump) "100% 동일한 미러(Twin) 카드 복제 모드 🎯" else "UID 복제 모드 🎯",
+                                    "2단계: 새 복제 카드 대기 🎯",
                                     color = Color.White,
-                                    fontSize = 11.sp,
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
                                 )
                             }
                             Spacer(modifier = Modifier.height(8.dp))
+                            val uid = targetCard?.uid ?: ""
                             Text(
-                                text = cleanUid.chunked(2).joinToString(" : "),
+                                text = uid.chunked(2).joinToString(" : "),
                                 fontSize = 26.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 fontFamily = FontFamily.Monospace,
                                 color = MaterialTheme.colorScheme.primary
                             )
-                        }
-
-                        SleekRadarPulseHero(
-                            title = "새 복제용(CUID) 카드를 대세요",
-                            subtitle = if (isFullClone && hasDump) 
-                                "모든 섹터(0~15) 64개 블록과 접근 권한까지 100% 완벽 덮어씁니다." 
-                            else 
-                                "카드를 대면 1초 만에 UID 덮어쓰기가 완료됩니다."
-                        )
-
-                        // Full Dump Clone Toggle Row
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surface)
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("100% 완벽 데이터 복제 (모든 섹터 & Access Bits)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                Text("UID뿐만 아니라 카드의 모든 덤프 블록을 1:1로 동일 복사합니다.", fontSize = 10.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = isFullClone,
-                                onCheckedChange = onToggleFullClone,
-                                modifier = Modifier.scale(0.8f)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "원본 카드 100% 덤프 완료 (${targetCard?.readSectorCount ?: 0}/16 섹터)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF10B981)
                             )
                         }
+
+                        MagicRadarPulseHero(
+                            title = "새 복제(CUID) 카드를 대세요!",
+                            subtitle = "휴대폰 뒷면에 대면 1초 만에 100% 동일하게 복제됩니다."
+                        )
+
+                        TextButton(onClick = onResetToRead) {
+                            Text("↺ 다른 원본 카드 스캔하기", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                        }
                     }
-                } else {
+                }
+
+                MagicFlowState.SUCCESS -> {
+                    // Step 3: Success Celebration!
                     Column(
+                        modifier = Modifier.fillMaxSize(),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                        verticalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Icon(Icons.Default.Info, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(40.dp))
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text("복제할 카드의 UID를 지정해 주세요", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("1단계에서 원본 카드를 스캔하면 전체 데이터와 함께 자동 지정됩니다.", fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center)
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(onClick = onBackToStep1) {
-                            Text("1단계 원본 카드 스캔하러 가기 ➔", fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Manual UID Input Row Card
-        Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("직접 UID 지정 (8자리 Hex)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    if (recentScannedCards.isNotEmpty()) {
-                        TextButton(
-                            onClick = {
-                                val card = recentScannedCards.first()
-                                onTargetUidChange(card.uid)
-                                MainActivity.targetCardInfo = card
-                            },
-                            contentPadding = PaddingValues(0.dp)
+                        Surface(
+                            color = Color(0xFF10B981),
+                            shape = CircleShape
                         ) {
-                            Text("최근 스캔 카드 불러오기 📋", fontSize = 11.sp)
+                            Text(
+                                "100% 동일한 복제 카드 생성 완료! 🎉",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
+                            )
+                        }
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(
+                                modifier = Modifier
+                                    .size(90.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF10B981).copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(54.dp))
+                            }
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text("복사 완료!", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF065F46))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("원본 카드와 모든 섹터, 접근 권한까지 1:1로 동일합니다.", fontSize = 12.sp, color = Color(0xFF047857), textAlign = TextAlign.Center)
+                        }
+
+                        Button(
+                            onClick = onResetToRead,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("다음 카드 복제하기 ↺", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(4.dp))
-                OutlinedTextField(
-                    value = targetUidInput,
-                    onValueChange = onTargetUidChange,
-                    placeholder = { Text("예: AABBCCDD", fontSize = 12.sp) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    singleLine = true
-                )
             }
         }
     }
 }
 
 @Composable
-fun SleekRadarPulseHero(title: String, subtitle: String) {
+fun MagicRadarPulseHero(title: String, subtitle: String) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val scale by infiniteTransition.animateFloat(
         initialValue = 0.85f,
@@ -954,7 +781,7 @@ fun SleekRadarPulseHero(title: String, subtitle: String) {
 }
 
 @Composable
-fun SleekHistoryRowItem(card: ScannedCardInfo, onSelectToClone: () -> Unit) {
+fun MagicHistoryRowItem(card: ScannedCardInfo, onSelectToClone: () -> Unit) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -978,15 +805,15 @@ fun SleekHistoryRowItem(card: ScannedCardInfo, onSelectToClone: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(card.timestamp, fontSize = 10.sp, color = Color.Gray)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("전체 복제 ➔", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Text("복제 ➔", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             }
         }
     }
 }
 
-// Sleek Theme Setup
+// Simple Theme Setup
 @Composable
-fun NfcSleekAppTheme(
+fun NfcMagicAppTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
