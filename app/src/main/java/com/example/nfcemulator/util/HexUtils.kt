@@ -81,14 +81,14 @@ object HexUtils {
     }
 
     val DEFAULT_KEYS = listOf(
-        byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()), // FFFFFFFFFFFF
-        byteArrayOf(0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte()), // 000000000000
-        byteArrayOf(0xA0.toByte(), 0xA1.toByte(), 0xA2.toByte(), 0xA3.toByte(), 0xA4.toByte(), 0xA5.toByte()), // A0A1A2A3A4A5
-        byteArrayOf(0xB0.toByte(), 0xB1.toByte(), 0xB2.toByte(), 0xB3.toByte(), 0xB4.toByte(), 0xB5.toByte()), // B0B1B2B3B4B5
-        byteArrayOf(0xD3.toByte(), 0xF7.toByte(), 0xD3.toByte(), 0xF7.toByte(), 0xD3.toByte(), 0xF7.toByte()), // D3F7D3F7D3F7
-        byteArrayOf(0x4D.toByte(), 0x3A.toByte(), 0x99.toByte(), 0xC3.toByte(), 0x51.toByte(), 0xDD.toByte()), // 4D3A99C351DD
-        byteArrayOf(0x1A.toByte(), 0x2B.toByte(), 0x3C.toByte(), 0x4D.toByte(), 0x5E.toByte(), 0x6F.toByte())  // 1A2B3C4D5E6F
-    )
+        "FFFFFFFFFFFF", "000000000000", "A0A1A2A3A4A5", "B0B1B2B3B4B5",
+        "D3F7D3F7D3F7", "4D3A99C351DD", "1A2B3C4D5E6F", "A0B1C2D3E4F5",
+        "123456789ABC", "A1B2C3D4E5F6", "484558414354", "888888888888",
+        "112233445566", "777777777777", "999999999999", "FF00FF00FF00",
+        "00FF00FF00FF", "AA00BB00CC00", "00AA00BB00CC", "121212121212",
+        "343434343434", "565656565656", "787878787878", "9A9A9A9A9A9A",
+        "BCBCBCBCBCBC", "DEDEDEDEDEDE", "F0F0F0F0F0F0", "0F0F0F0F0F0F"
+    ).map { hexStringToByteArray(it) }
 
     fun formatBlock0String(uidHex: String): String {
         return try {

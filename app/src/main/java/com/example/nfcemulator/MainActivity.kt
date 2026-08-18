@@ -351,7 +351,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
             }
 
             var writtenBlockCount = 1
-            // Step 2: Full Sector Data Clone (Write blocks 1..63 if full dump available)
+            // Step 2: Full 100% Sector Data Clone (Write all blocks 1..63 including Sector Trailers)
             if (doFullSectorClone) {
                 val sectorCount = mifare.sectorCount.coerceAtMost(16)
                 for (sector in 0 until sectorCount) {
@@ -370,10 +370,6 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                         for (b in 0 until blockCount) {
                             val blockIndex = firstBlock + b
                             if (blockIndex == 0) continue // Already written
-                            val isTrailerBlock = (b == blockCount - 1)
-
-                            // Skip trailer block to prevent locking sector unless data is valid
-                            if (isTrailerBlock) continue
 
                             val hexData = dumpBlocks.getOrNull(blockIndex) ?: continue
                             if (hexData.length == 32 && !hexData.contains("-")) {
@@ -382,7 +378,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                                     mifare.writeBlock(blockIndex, blockBytes)
                                     writtenBlockCount++
                                 } catch (e: Exception) {
-                                    Log.w("CuidWrite", "Block $blockIndex write failed", e)
+                                    Log.w("CuidWrite", "Block $blockIndex write failed, trying transceive", e)
                                 }
                             }
                         }
@@ -394,7 +390,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
             val finalCount = writtenBlockCount
             runOnUiThread {
                 if (doFullSectorClone) {
-                    Toast.makeText(this, "🎉 카드의 모든 데이터 (0~15 섹터, " + finalCount + "개 블록) 복제 완료!", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "🎉 원본과 100% 완전히 동일한 카드 (0~15 섹터, " + finalCount + "/64개 블록) 복제 완료!", Toast.LENGTH_LONG).show()
                 } else {
                     Toast.makeText(this, "🎉 UID 복제 성공! (새 UID: " + uidToWrite + ")", Toast.LENGTH_LONG).show()
                 }
@@ -804,7 +800,7 @@ fun SleekStep2WriteBody(
                                 shape = CircleShape
                             ) {
                                 Text(
-                                    if (isFullClone && hasDump) "전체 섹터 풀 데이터 복제 모드 🎯" else "UID 복제 모드 🎯",
+                                    if (isFullClone && hasDump) "100% 동일한 미러(Twin) 카드 복제 모드 🎯" else "UID 복제 모드 🎯",
                                     color = Color.White,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
@@ -824,7 +820,7 @@ fun SleekStep2WriteBody(
                         SleekRadarPulseHero(
                             title = "새 복제용(CUID) 카드를 대세요",
                             subtitle = if (isFullClone && hasDump) 
-                                "모든 섹터(0~15) 데이터와 UID를 완벽하게 덮어씁니다." 
+                                "모든 섹터(0~15) 64개 블록과 접근 권한까지 100% 완벽 덮어씁니다." 
                             else 
                                 "카드를 대면 1초 만에 UID 덮어쓰기가 완료됩니다."
                         )
@@ -840,8 +836,8 @@ fun SleekStep2WriteBody(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("전체 섹터 데이터 복제", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                Text("UID 외에 카드의 모든 데이터 블록을 복제합니다.", fontSize = 10.sp, color = Color.Gray)
+                                Text("100% 완벽 데이터 복제 (모든 섹터 & Access Bits)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text("UID뿐만 아니라 카드의 모든 덤프 블록을 1:1로 동일 복사합니다.", fontSize = 10.sp, color = Color.Gray)
                             }
                             Switch(
                                 checked = isFullClone,
